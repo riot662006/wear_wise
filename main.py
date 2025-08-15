@@ -18,8 +18,8 @@ sm.add_many(sliders)
 BG_COLOR = (0, 255, 0)
 
 # initialize mediapipe
-mp_selfie = mp.solutions.selfie_segmentation
-mp_pose = mp.solutions.pose
+mp_selfie = mp.solutions.selfie_segmentation  # type: ignore
+mp_pose = mp.solutions.pose  # type: ignore
 
 # make frame fullscreen
 cv2.namedWindow(MAIN_WIN, cv2.WND_PROP_FULLSCREEN)
