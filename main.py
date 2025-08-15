@@ -2,7 +2,18 @@ import cv2
 import numpy as np
 import mediapipe as mp
 
-win_name = "Smart Mirror (MVP)"
+from ui.slider import SliderManager, SliderSpec
+
+MAIN_WIN = "Smart Mirror (MVP)"
+
+# slider specs
+sliders = [
+    SliderSpec("MaskTh", 0.0, 1.0, 0.1, step=0.01),
+]
+
+# slider manager
+sm = SliderManager(MAIN_WIN)
+sm.add_many(sliders)
 
 BG_COLOR = (0, 255, 0)
 
@@ -11,9 +22,9 @@ mp_selfie = mp.solutions.selfie_segmentation
 mp_pose = mp.solutions.pose
 
 # make frame fullscreen
-cv2.namedWindow(win_name, cv2.WND_PROP_FULLSCREEN)
+cv2.namedWindow(MAIN_WIN, cv2.WND_PROP_FULLSCREEN)
 cv2.setWindowProperty(
-    win_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    MAIN_WIN, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
 
 def main():
@@ -41,12 +52,12 @@ def main():
             results = seg.process(rgb)
 
             condition = np.stack(
-                (results.segmentation_mask,) * 3, axis=-1) > 0.1
+                (results.segmentation_mask,) * 3, axis=-1) > sm.get("MaskTh")
 
             output_image = np.where(
                 condition, frame, cv2.GaussianBlur(frame, (55, 55), 0))
 
-            cv2.imshow(win_name, output_image)
+            cv2.imshow(MAIN_WIN, output_image)
             if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit
                 break
         cap.release()
