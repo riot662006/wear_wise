@@ -10,6 +10,13 @@ __pycache__/
 # Ignore my experiments. They just for me =)
 experiments
 
+# Ignore data files
+/fashion-dataset/*
+/datasets/*
+images/*
+train/*
+/images/*
+
 # Ignore output files
 /output/*
 

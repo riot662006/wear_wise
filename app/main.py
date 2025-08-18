@@ -1,0 +1,119 @@
+import cv2
+import numpy as np
+import mediapipe as mp
+import pyautogui
+
+from config import (
+    MAIN_WIN, MODEL_PATH, DEVICE, IMGSZ, CONF_THRESH,
+    BG_BLUR_KSIZE, KEY_QUIT, KEY_RESET, KEY_GRAYSCALE, KEY_TOGGLE_BOXES,
+    CAM_INDEX, CAP_WIDTH, CAP_HEIGHT
+)
+from detection.yolo_detector import YoloClothesDetector
+from visualization.draw import draw_detections, draw_hud
+from utils.image import letterbox_resize
+from ui.slider import SliderManager, SliderSpec
+
+# Sliders
+sliders = [
+    SliderSpec("MaskTh", 0.0, 1.0, 0.1, step=0.01),
+    SliderSpec("Conf", 0.0, 1.0, CONF_THRESH, step=0.01),  # live conf control
+]
+
+# Window & screen
+SCREEN_SIZE = pyautogui.size()
+cv2.namedWindow(MAIN_WIN, cv2.WND_PROP_FULLSCREEN)
+cv2.setWindowProperty(MAIN_WIN, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+# MediaPipe
+mp_selfie = mp.solutions.selfie_segmentation
+mp_pose = mp.solutions.pose
+
+
+def main():
+    # Sliders
+    sm = SliderManager(MAIN_WIN)
+    sm.add_many(sliders)
+
+    # Camera
+    cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAP_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAP_HEIGHT)
+
+    if not cap.isOpened():
+        print("Camera not found")
+        return
+
+    # Detector
+    detector = YoloClothesDetector(
+        weights_path=MODEL_PATH,
+        device=DEVICE,
+        imgsz=IMGSZ,
+        conf=CONF_THRESH
+    )
+    class_names = detector.class_names
+
+    # Toggles
+    grayscale = False
+    show_boxes = True
+
+    with mp_selfie.SelfieSegmentation(model_selection=1) as seg, mp_pose.Pose(model_complexity=1) as pose:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Camera not found")
+                break
+
+            frame = cv2.flip(frame, 1)  # mirror
+
+            # Background processing
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = seg.process(rgb)
+            condition = np.stack((results.segmentation_mask,)
+                                 * 3, axis=-1) > float(sm.get("MaskTh"))
+            bg_blur = cv2.GaussianBlur(frame, BG_BLUR_KSIZE, 0)
+            view = np.where(condition, frame, bg_blur)
+
+            # Optional grayscale (keep 3 channels for YOLO pipeline consistency)
+            if grayscale:
+                gray = cv2.cvtColor(view, cv2.COLOR_BGR2GRAY)
+                view_for_det = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            else:
+                view_for_det = view
+
+            # Update detector conf from slider
+            detector.conf = float(sm.get("Conf"))
+
+            # Detect on original-sized view_for_det
+            rects = detector.predict(view_for_det)
+
+            # Draw boxes
+            if show_boxes and rects:
+                view = draw_detections(view, rects, class_names)
+
+            # HUD
+            hud = f"Conf={detector.conf:.2f} Gray={grayscale} Boxes={show_boxes} ResCam={int(cap.get(3))}x{int(cap.get(4))} ImgSz={detector.imgsz}"
+            view = draw_hud(view, hud)
+
+            # Fullscreen scaling
+            out = letterbox_resize(view, SCREEN_SIZE.width, SCREEN_SIZE.height)
+            cv2.imshow(MAIN_WIN, out)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord(KEY_QUIT[0]), KEY_QUIT[1]):
+                break
+            elif key == ord(KEY_RESET):
+                grayscale = False
+                show_boxes = True
+                sm.set("MaskTh", 0.1)
+                sm.set("Conf", CONF_THRESH)
+            elif key == ord(KEY_GRAYSCALE):
+                grayscale = not grayscale
+            elif key == ord(KEY_TOGGLE_BOXES):
+                show_boxes = not show_boxes
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
