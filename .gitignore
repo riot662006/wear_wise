@@ -1,24 +1,47 @@
-# Byte-compiled / optimized / DLL files
+# -----------------------
+# Python build artifacts
+# -----------------------
 __pycache__/
-*.py[codz]
+*.py[cod]
 *$py.class
 
-# Environment variables and virtual environments
+# -----------------------
+# Virtual environments & env files
+# -----------------------
 .env
-.venv
+.venv/
+venv/
+*.env
 
-# Ignore my experiments. They just for me =)
-experiments
+# -----------------------
+# Experiments (personal, not for repo)
+# -----------------------
+experiments/
 
-# Ignore data files
-/fashion-dataset/*
-/datasets/*
-images/*
-train/*
-/images/*
+# -----------------------
+# Datasets & large files
+# -----------------------
+datasets/*.zip
+datasets/deepfashion2/        # ignore extracted dataset
+fashion-dataset/
+output/
+train/
+runs/                         # typical YOLO training outputs
 
-# Ignore output files
-/output/*
+# -----------------------
+# Images & weights
+# -----------------------
+*.pt                          # YOLO model weights
+*.onnx                        # exported models
+*.jpg
+*.jpeg
+*.png
 
-# Scratch files
+# If you want to keep small demo images for docs,
+# put them under docs/images/ and whitelist them:
+!docs/images/*
+
+# -----------------------
+# Scratch / dev files
+# -----------------------
 *.devlog
