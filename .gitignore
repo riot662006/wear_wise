@@ -27,6 +27,7 @@ fashion-dataset/
 output/
 train/
 runs/                         # typical YOLO training outputs
+*.csv
 
 # -----------------------
 # Images & weights
@@ -35,7 +36,9 @@ runs/                         # typical YOLO training outputs
 *.onnx                        # exported models
 *.jpg
 *.jpeg
-*.png
+*.png                      
+*.pth
+
 
 # -----------------------
 # Scratch / dev files
