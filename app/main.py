@@ -3,11 +3,8 @@ import numpy as np
 import mediapipe as mp
 import pyautogui
 
-from config import (
-    MAIN_WIN, MODEL_PATH, DEVICE, IMGSZ, CONF_THRESH,
-    BG_BLUR_KSIZE, KEY_QUIT, KEY_RESET, KEY_GRAYSCALE, KEY_TOGGLE_BOXES,
-    CAM_INDEX, CAP_WIDTH, CAP_HEIGHT
-)
+from config import *
+from detection.pattern_detector import AlexNetPatternDetector
 from detection.yolo_detector import YoloClothesDetector
 from visualization.draw import draw_detections, draw_hud
 from utils.image import letterbox_resize
@@ -45,12 +42,14 @@ def main():
 
     # Detector
     detector = YoloClothesDetector(
-        weights_path=MODEL_PATH,
+        weights_path=CLOTHE_SEG_MODEL_PATH,
         device=DEVICE,
         imgsz=IMGSZ,
         conf=CONF_THRESH
     )
-    class_names = detector.class_names
+    yolo_class_names = detector.class_names
+
+    pattern_detector = AlexNetPatternDetector(PATTERN_MODEL_PATH, PATTERN_CLASS_NAMES, DEVICE)
 
     # Toggles
     grayscale = False
@@ -88,7 +87,29 @@ def main():
 
             # Draw boxes
             if show_boxes and rects:
-                view = draw_detections(view, rects, class_names)
+                view = draw_detections(view, rects, yolo_class_names)
+
+                # --- NEW: Pattern Prediction Loop (Using the class method) ---
+                for rect in rects:
+                    x1, y1, x2, y2, conf, cls = rect
+                    
+                    bbox = (x1, y1, x2, y2)
+                    predicted_pattern = pattern_detector.predict_from_bbox(view_for_det, bbox)
+                    
+                    # Draw pattern label
+                    text = f"Pattern: {predicted_pattern}"
+                    text_x = int(x1)
+                    
+                    # FIX: Offset the pattern text below the YOLO detection label.
+                    # Assuming the YOLO label is around 20-25 pixels high,
+                    # we use an offset of 30 pixels from the top of the box.
+                    yolo_label_offset = 30 
+                    text_y = int(y1) + yolo_label_offset
+                    
+                    cv2.putText(view, text, (text_x, text_y), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                
+               
 
             # HUD
             hud = f"Conf={detector.conf:.2f} Gray={grayscale} Boxes={show_boxes} ResCam={int(cap.get(3))}x{int(cap.get(4))} ImgSz={detector.imgsz}"
