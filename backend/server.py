@@ -6,9 +6,11 @@ import numpy as np
 from flask import Flask
 from flask_socketio import SocketIO, emit
 
-# TODO: import your YOLO clothes segmenter here
-# from detection.yolo_detector import YoloClothesDetector
-# detector = YoloClothesDetector(weights_path=..., device=..., imgsz=..., conf=...)
+from detection.yolo_detector import YoloClothesDetector
+from config import defaults
+
+detector = YoloClothesDetector(weights_path=defaults.MODEL_PATH,
+                               device=defaults.DEVICE, imgsz=defaults.IMGSZ, conf=defaults.CONF_THRESH)
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -18,8 +20,12 @@ def segment_frame(arr_rgb: np.ndarray):
     # TODO: call your detector + convert masks to polygons/bboxes
     # return {"width": W, "height": H, "items":[{"id":"g0", "bbox":[x,y,w,h], "label":"shirt"}]}
     H, W = arr_rgb.shape[:2]
-    # fake
-    return {"width": W, "height": H, "items": [{"id": "g0", "bbox": [200, 100, 120, 50], "label": "shirt"}]}
+    dets = detector.predict(arr_rgb)
+
+    items = [{"id": f"g{idx}", "bbox": [x1, y1, x2-x1, y2-y1], "label": detector.class_names[class_id]}
+             for idx, (x1, y1, x2, y2, class_id, score) in enumerate(dets)]
+
+    return {"width": W, "height": H, "items": items}
 
 
 @socketio.on("frame")
