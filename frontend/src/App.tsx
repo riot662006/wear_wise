@@ -1,6 +1,8 @@
 // src/App.tsx
 import { useEffect, useRef, useState } from "react";
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
+import { useSocket } from "./hooks/useSocket";
+import ConnectionOverlay from "./components/ConnectionOverlay";
 
 type Item = {
   id: string;
@@ -10,8 +12,8 @@ type Item = {
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const socketRef = useRef<Socket | null>(null);
   const inflight = useRef(false);
+  const { socket: socketRef, status } = useSocket({ url: "http://localhost:5000" });
 
   const [seg, setSeg] = useState<{
     width: number;
@@ -20,16 +22,16 @@ export default function App() {
   } | null>(null);
   const [renderSize, setRenderSize] = useState({ w: 0, h: 0 });
 
+  // Socket event wiring
   useEffect(() => {
-    const socket = io("http://localhost:5000");
-    socketRef.current = socket;
+    const socket = socketRef.current as Socket | null;
+    if (!socket) return;
 
-    socket.on("segmentation", (data) => {
+    const onSeg = (data: any) => {
       setSeg(data);
-      inflight.current = false; // allow next frame
-    });
-    socket.on("patterns", (res) => {
-      // attach patterns to items for display
+      inflight.current = false;
+    };
+    const onPatterns = (res: any[]) => {
       setSeg((s) =>
         s
           ? {
@@ -43,13 +45,18 @@ export default function App() {
             }
           : s
       );
-    });
+    };
+
+    socket.on("segmentation", onSeg);
+    socket.on("patterns", onPatterns);
 
     return () => {
-      socket.disconnect();
+      socket.off("segmentation", onSeg);
+      socket.off("patterns", onPatterns);
     };
-  }, []);
+  }, [socketRef]);
 
+  // Camera setup
   useEffect(() => {
     (async () => {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -62,9 +69,24 @@ export default function App() {
     })();
   }, []);
 
+  // Pause / resume video based on connection status
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    const v = videoRef.current;
+    if (!v) return;
+
+    if (status === "connected") {
+      // resume
+      v.play().catch(() => {});
+    } else {
+      // pause feed display while we reconnect
+      v.pause();
+    }
+  }, [status]);
+
+  // Frame loop (only when connected)
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
 
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
@@ -72,29 +94,31 @@ export default function App() {
     let raf = 0;
     const tick = () => {
       const socket = socketRef.current;
-      if (!socket || socket.disconnected) {
+      const connected = status === "connected";
+
+      if (!socket || !connected) {
         raf = requestAnimationFrame(tick);
         return;
       }
 
-      const vw = video.videoWidth,
-        vh = video.videoHeight;
+      const vw = v.videoWidth,
+        vh = v.videoHeight;
       if (vw && vh && !inflight.current) {
         const targetW = 640;
         const scale = targetW / vw;
         const targetH = Math.round(vh * scale);
         canvas.width = targetW;
         canvas.height = targetH;
-        ctx.drawImage(video, 0, 0, targetW, targetH);
+        ctx.drawImage(v, 0, 0, targetW, targetH);
         const dataUrl = canvas.toDataURL("image/webp", 0.75);
         inflight.current = true;
-        socket.emit("frame", dataUrl);
+        (socket as any).emit("frame", dataUrl);
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, []);
+  }, [socketRef, status]);
 
   // measure render box
   useEffect(() => {
@@ -108,23 +132,19 @@ export default function App() {
   }, []);
 
   const requestPatterns = async () => {
-    const socket = socketRef.current;
-    const video = videoRef.current;
+    const socket = socketRef.current as Socket | null;
+    const v = videoRef.current;
     const s = seg;
-    if (!socket || !video || !s) return;
+    if (!socket || !v || !s || status !== "connected") return;
 
-    // make tiny crops for each item and send as data URLs
     const crops = await Promise.all(
       s.items.map(async (it) => {
-        // crop from CURRENT FRAME to keep simple
-        // const vw = video.videoWidth,
-        //   vh = video.videoHeight;
         const c = document.createElement("canvas");
         const cx = c.getContext("2d")!;
         const [x, y, w, h] = it.bbox;
         c.width = w;
         c.height = h;
-        cx.drawImage(video, x, y, w, h, 0, 0, w, h);
+        cx.drawImage(v, x, y, w, h, 0, 0, w, h);
         return {
           id: it.id,
           label: it.label ?? "garment",
@@ -132,7 +152,7 @@ export default function App() {
         };
       })
     );
-    socket.emit("analyze_patterns", crops);
+    (socket as any).emit("analyze_patterns", crops);
   };
 
   const sx = seg && renderSize.w ? renderSize.w / seg.width : 1;
@@ -144,7 +164,7 @@ export default function App() {
         display: "grid",
         placeItems: "center",
         height: "100dvh",
-        background: "#0a0a0a",
+        background: "#494949",
         color: "#fff",
       }}
     >
@@ -155,6 +175,7 @@ export default function App() {
           muted
           playsInline
         />
+        {/* bbox overlay */}
         {seg && (
           <svg
             style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
@@ -171,7 +192,7 @@ export default function App() {
                     width={w * sx}
                     height={h * sy}
                     fill="none"
-                    stroke="green"
+                    stroke="white"
                     strokeOpacity={0.95}
                     strokeWidth={2}
                     rx={6}
@@ -182,7 +203,7 @@ export default function App() {
                       x={x * sx + 8}
                       y={y * sy + 20}
                       fontSize="14"
-                      fill="green"
+                      fill="white"
                     >
                       {it.label}
                     </text>
@@ -192,6 +213,11 @@ export default function App() {
             })}
           </svg>
         )}
+
+        {/* spinner + pause overlay when not connected */}
+        <ConnectionOverlay status={status} />
+
+        {/* Controls */}
         <div
           style={{
             position: "absolute",
@@ -199,17 +225,19 @@ export default function App() {
             top: 12,
             display: "flex",
             gap: 8,
+            zIndex: 10,
           }}
         >
           <button
             onClick={requestPatterns}
+            disabled={status !== "connected"}
             style={{
               padding: "10px 14px",
               borderRadius: 10,
               border: "1px solid #444",
-              background: "#111",
+              background: status === "connected" ? "#111" : "#333",
               color: "#fff",
-              cursor: "pointer",
+              cursor: status === "connected" ? "pointer" : "not-allowed",
             }}
           >
             Analyze Patterns
