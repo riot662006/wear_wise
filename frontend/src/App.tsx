@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Socket } from "socket.io-client";
 import { useSocket } from "./hooks/useSocket";
 
 import ConnectionOverlay from "./components/ConnectionOverlay";
 import PatternModal, { type PatternItem } from "./components/PatternModal";
 import { scaleClampXYWH } from "./utils/geometry";
 import { BoundingBoxOverlay } from "./components/BoundingBoxOverlay";
-
-type Item = {
-  id: string;
-  bbox: [number, number, number, number];
-  label?: string;
-};
+import type { PatternResult, SegmentationPayload } from "./types/socket";
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -20,34 +14,27 @@ export default function App() {
     url: "http://localhost:5000",
   });
 
-  const [seg, setSeg] = useState<{
-    width: number;
-    height: number;
-    items: Item[];
-  } | null>(null);
+  const [seg, setSeg] = useState<SegmentationPayload | null>(null);
   const [renderSize, setRenderSize] = useState({ w: 0, h: 0 });
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalItems, setModalItems] = useState<PatternItem[]>([]);
 
-  const sx = seg && renderSize.w ? renderSize.w / seg.width : 1;
-  const sy = seg && renderSize.h ? renderSize.h / seg.height : 1;
-
   // Socket event wiring
   useEffect(() => {
-    const socket = socketRef.current as Socket | null;
+    const socket = socketRef.current;
     if (!socket) return;
 
-    const onSeg = (data: any) => {
+    const onSeg = (data: SegmentationPayload) => {
       setSeg(data);
       inflight.current = false;
     };
-    const onPatterns = (res: any[]) => {
+    const onPatterns = (res: PatternResult[]) => {
       // merge results into modal items by id
       setModalItems((prev) =>
         prev.map((it) => {
-          const m = res.find((r: any) => r.id === it.id);
+          const m = res.find((r: PatternResult) => r.id === it.id);
           return m
             ? {
                 ...it,
@@ -65,7 +52,7 @@ export default function App() {
           ? {
               ...s,
               items: s.items.map((it) => {
-                const match = res.find((r: any) => r.id === it.id);
+                const match = res.find((r: PatternResult) => r.id === it.id);
                 return match
                   ? { ...it, label: `${it.label ?? "item"} • ${match.pattern}` }
                   : it;
@@ -134,7 +121,7 @@ export default function App() {
         ctx.drawImage(v, 0, 0, targetW, targetH);
         const dataUrl = canvas.toDataURL("image/webp", 0.75);
         inflight.current = true;
-        (socket as any).emit("frame", dataUrl);
+        socket.emit("frame", dataUrl);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -155,7 +142,7 @@ export default function App() {
 
   // Opens modal, pauses video/emission (handled by isModalOpen), kicks off analysis
   const openAnalysisModal = async () => {
-    const socket = socketRef.current as Socket | null;
+    const socket = socketRef.current;
     const v = videoRef.current;
     const s = seg;
     if (!socket || !v || !s || status !== "connected") return;
@@ -197,7 +184,7 @@ export default function App() {
 
     setModalItems(crops);
     setIsModalOpen(true);
-    (socket as any).emit(
+    socket.emit(
       "analyze_patterns",
       crops.map(({ id, label, cropDataUrl }) => ({ id, label, cropDataUrl }))
     );

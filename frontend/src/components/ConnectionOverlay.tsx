@@ -1,4 +1,3 @@
-import React from "react";
 import type { ConnStatus } from "../hooks/useSocket";
 
 export default function ConnectionOverlay({ status }: { status: ConnStatus }) {

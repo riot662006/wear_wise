@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
+import type {
+  ClientToServerEvents,
+  ServerToClientEvents,
+} from "../types/socket";
 
 export type ConnStatus = "connecting" | "connected" | "disconnected";
 
@@ -16,10 +20,13 @@ export function useSocket({
   auth,
 }: UseSocketOptions = {}) {
   const [status, setStatus] = useState<ConnStatus>("connecting");
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<Socket<
+    ServerToClientEvents,
+    ClientToServerEvents
+  > | null>(null);
 
   useEffect(() => {
-    const socket = io(url, {
+    const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
       path,
       auth,
       // Reconnect every ~5s forever
