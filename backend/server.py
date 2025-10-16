@@ -6,8 +6,12 @@ import numpy as np
 from flask import Flask
 from flask_socketio import SocketIO, emit
 
+from backend.preprocess.bg_blur import BgBlur, BgBlurConfig
 from detection.yolo_detector import YoloClothesDetector
 from config import defaults
+
+bg_blur = BgBlur(BgBlurConfig(mask_thresh=0.10, ksize=31,
+                 dilate=2, erode=0, model_selection=1))
 
 detector = YoloClothesDetector(weights_path=defaults.MODEL_PATH,
                                device=defaults.DEVICE, imgsz=defaults.IMGSZ, conf=defaults.CONF_THRESH)
@@ -20,7 +24,8 @@ def segment_frame(arr_rgb: np.ndarray):
     # TODO: call your detector + convert masks to polygons/bboxes
     # return {"width": W, "height": H, "items":[{"id":"g0", "bbox":[x,y,w,h], "label":"shirt"}]}
     H, W = arr_rgb.shape[:2]
-    dets = detector.predict(arr_rgb)
+    arr_rgb_for_det = bg_blur.apply(arr_rgb)
+    dets = detector.predict(arr_rgb_for_det)
 
     items = [{"id": f"g{idx}", "bbox": [x1, y1, x2-x1, y2-y1], "label": detector.class_names[class_id]}
              for idx, (x1, y1, x2, y2, class_id, score) in enumerate(dets)]
