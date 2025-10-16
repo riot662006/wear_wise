@@ -15,6 +15,7 @@ python-dateutil==2.9.0.post0
 attrs==25.3.0
 
 # Deep learning (CUDA build pulled from the extra index)
+tensorflow==2.17.0
 torch==2.8.0
 torchvision==0.23.0
 torchaudio==2.8.0
@@ -22,8 +23,10 @@ ultralytics==8.3.203
 
 # Computer vision
 opencv-python==4.11.0.86
+opencv-python-headless>=4.9
 opencv-contrib-python==4.11.0.86
-mediapipe==0.10.21
+mediapipe==0.10.14
+protobuf==4.25.3
 
 # GUI / automation
 PyAutoGUI==0.9.54
