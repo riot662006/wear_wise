@@ -3,7 +3,6 @@ import { useSocket } from "./hooks/useSocket";
 
 import ConnectionOverlay from "./components/ConnectionOverlay";
 import PatternModal, { type PatternItem } from "./components/PatternModal";
-import { scaleClampXYWH } from "./utils/geometry";
 import { BoundingBoxOverlay } from "./components/BoundingBoxOverlay";
 import type { PatternResult, SegmentationPayload } from "./types/socket";
 
@@ -121,7 +120,7 @@ export default function App() {
         ctx.drawImage(v, 0, 0, targetW, targetH);
         const dataUrl = canvas.toDataURL("image/webp", 0.75);
         inflight.current = true;
-        socket.emit("frame", dataUrl);
+        socket.emit("frame", { dataUrl, srcW: vw, srcH: vh }); // 👈 send native size
       }
       raf = requestAnimationFrame(tick);
     };
@@ -147,35 +146,19 @@ export default function App() {
     const s = seg;
     if (!socket || !v || !s || status !== "connected") return;
 
-    // scale from segmentation coords → video coords
-    const vw = v.videoWidth,
-      vh = v.videoHeight;
-    const sxVid = vw / s.width;
-    const syVid = vh / s.height;
-
     const crops: PatternItem[] = await Promise.all(
       s.items.map(async (it) => {
-        const [x0, y0, w0, h0] = it.bbox; // bbox in seg space
-        const [x, y, w, h] = scaleClampXYWH(
-          [x0, y0, w0, h0],
-          sxVid,
-          syVid,
-          vw,
-          vh
-        );
-
+        const [x, y, w, h] = it.bbox; // video-native coords
         const c = document.createElement("canvas");
         const cx = c.getContext("2d")!;
         c.width = w;
         c.height = h;
-        // crop from the CURRENT video frame in video pixel space
         cx.drawImage(v, x, y, w, h, 0, 0, w, h);
-
         return {
           id: it.id,
           label: it.label ?? "garment",
           cropDataUrl: c.toDataURL("image/jpeg", 0.9),
-          pattern: undefined, // spinner until results arrive
+          pattern: undefined,
           confidence: null,
           error: null,
         };
@@ -220,7 +203,7 @@ export default function App() {
             naturalH={seg.height}
             renderW={renderSize.w}
             renderH={renderSize.h}
-            stroke="white"
+            stroke="green"
             strokeWidth={2}
             showLabels
           />

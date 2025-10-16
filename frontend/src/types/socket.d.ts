@@ -28,6 +28,12 @@ export interface PatternRequest {
   cropDataUrl: string;
 }
 
+export interface FramePayload {
+  dataUrl: string;
+  srcW: number;
+  srcH: number;
+}
+
 // Socket.IO typing
 export interface ServerToClientEvents extends DefaultEventsMap {
   segmentation: (data: SegmentationPayload) => void;
@@ -35,6 +41,6 @@ export interface ServerToClientEvents extends DefaultEventsMap {
 }
 
 export interface ClientToServerEvents extends DefaultEventsMap {
-  frame: (dataUrl: string) => void;
+  frame: (dataUrl: FramePayload) => void;
   analyze_patterns: (items: PatternRequest[]) => void;
 }
