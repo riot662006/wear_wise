@@ -1,8 +1,11 @@
-// src/App.tsx
 import { useEffect, useRef, useState } from "react";
 import { Socket } from "socket.io-client";
 import { useSocket } from "./hooks/useSocket";
+
 import ConnectionOverlay from "./components/ConnectionOverlay";
+import PatternModal, { type PatternItem } from "./components/PatternModal";
+import { scaleClampXYWH } from "./utils/geometry";
+import { BoundingBoxOverlay } from "./components/BoundingBoxOverlay";
 
 type Item = {
   id: string;
@@ -13,7 +16,9 @@ type Item = {
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const inflight = useRef(false);
-  const { socket: socketRef, status } = useSocket({ url: "http://localhost:5000" });
+  const { socket: socketRef, status } = useSocket({
+    url: "http://localhost:5000",
+  });
 
   const [seg, setSeg] = useState<{
     width: number;
@@ -21,6 +26,13 @@ export default function App() {
     items: Item[];
   } | null>(null);
   const [renderSize, setRenderSize] = useState({ w: 0, h: 0 });
+
+  // Modal state
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [modalItems, setModalItems] = useState<PatternItem[]>([]);
+
+  const sx = seg && renderSize.w ? renderSize.w / seg.width : 1;
+  const sy = seg && renderSize.h ? renderSize.h / seg.height : 1;
 
   // Socket event wiring
   useEffect(() => {
@@ -32,6 +44,22 @@ export default function App() {
       inflight.current = false;
     };
     const onPatterns = (res: any[]) => {
+      // merge results into modal items by id
+      setModalItems((prev) =>
+        prev.map((it) => {
+          const m = res.find((r: any) => r.id === it.id);
+          return m
+            ? {
+                ...it,
+                pattern: m.pattern ?? "other",
+                confidence:
+                  typeof m.confidence === "number" ? m.confidence : null,
+                error: null,
+              }
+            : it;
+        })
+      );
+      // also annotate live labels if you want
       setSeg((s) =>
         s
           ? {
@@ -69,21 +97,16 @@ export default function App() {
     })();
   }, []);
 
-  // Pause / resume video based on connection status
+  // Pause/resume video based on connection AND modal state
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+    const shouldPlay = status === "connected" && !isModalOpen;
+    if (shouldPlay) v.play().catch(() => {});
+    else v.pause();
+  }, [status, isModalOpen]);
 
-    if (status === "connected") {
-      // resume
-      v.play().catch(() => {});
-    } else {
-      // pause feed display while we reconnect
-      v.pause();
-    }
-  }, [status]);
-
-  // Frame loop (only when connected)
+  // Frame loop (only when connected AND modal is closed)
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -95,8 +118,7 @@ export default function App() {
     const tick = () => {
       const socket = socketRef.current;
       const connected = status === "connected";
-
-      if (!socket || !connected) {
+      if (!socket || !connected || isModalOpen) {
         raf = requestAnimationFrame(tick);
         return;
       }
@@ -118,7 +140,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [socketRef, status]);
+  }, [socketRef, status, isModalOpen]);
 
   // measure render box
   useEffect(() => {
@@ -131,32 +153,59 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
-  const requestPatterns = async () => {
+  // Opens modal, pauses video/emission (handled by isModalOpen), kicks off analysis
+  const openAnalysisModal = async () => {
     const socket = socketRef.current as Socket | null;
     const v = videoRef.current;
     const s = seg;
     if (!socket || !v || !s || status !== "connected") return;
 
-    const crops = await Promise.all(
+    // scale from segmentation coords → video coords
+    const vw = v.videoWidth,
+      vh = v.videoHeight;
+    const sxVid = vw / s.width;
+    const syVid = vh / s.height;
+
+    const crops: PatternItem[] = await Promise.all(
       s.items.map(async (it) => {
+        const [x0, y0, w0, h0] = it.bbox; // bbox in seg space
+        const [x, y, w, h] = scaleClampXYWH(
+          [x0, y0, w0, h0],
+          sxVid,
+          syVid,
+          vw,
+          vh
+        );
+
         const c = document.createElement("canvas");
         const cx = c.getContext("2d")!;
-        const [x, y, w, h] = it.bbox;
         c.width = w;
         c.height = h;
+        // crop from the CURRENT video frame in video pixel space
         cx.drawImage(v, x, y, w, h, 0, 0, w, h);
+
         return {
           id: it.id,
           label: it.label ?? "garment",
           cropDataUrl: c.toDataURL("image/jpeg", 0.9),
+          pattern: undefined, // spinner until results arrive
+          confidence: null,
+          error: null,
         };
       })
     );
-    (socket as any).emit("analyze_patterns", crops);
+
+    setModalItems(crops);
+    setIsModalOpen(true);
+    (socket as any).emit(
+      "analyze_patterns",
+      crops.map(({ id, label, cropDataUrl }) => ({ id, label, cropDataUrl }))
+    );
   };
 
-  const sx = seg && renderSize.w ? renderSize.w / seg.width : 1;
-  const sy = seg && renderSize.h ? renderSize.h / seg.height : 1;
+  const closeModal = () => {
+    setIsModalOpen(false); // video + emission resumes via effects
+  };
 
   return (
     <div
@@ -164,7 +213,7 @@ export default function App() {
         display: "grid",
         placeItems: "center",
         height: "100dvh",
-        background: "#494949",
+        background: "#0a0a0a",
         color: "#fff",
       }}
     >
@@ -175,43 +224,19 @@ export default function App() {
           muted
           playsInline
         />
+
         {/* bbox overlay */}
         {seg && (
-          <svg
-            style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
-            viewBox={`0 0 ${renderSize.w} ${renderSize.h}`}
-            preserveAspectRatio="none"
-          >
-            {seg.items.map((it) => {
-              const [x, y, w, h] = it.bbox;
-              return (
-                <g key={it.id}>
-                  <rect
-                    x={x * sx}
-                    y={y * sy}
-                    width={w * sx}
-                    height={h * sy}
-                    fill="none"
-                    stroke="white"
-                    strokeOpacity={0.95}
-                    strokeWidth={2}
-                    rx={6}
-                    ry={6}
-                  />
-                  {it.label && (
-                    <text
-                      x={x * sx + 8}
-                      y={y * sy + 20}
-                      fontSize="14"
-                      fill="white"
-                    >
-                      {it.label}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-          </svg>
+          <BoundingBoxOverlay
+            items={seg.items}
+            naturalW={seg.width}
+            naturalH={seg.height}
+            renderW={renderSize.w}
+            renderH={renderSize.h}
+            stroke="white"
+            strokeWidth={2}
+            showLabels
+          />
         )}
 
         {/* spinner + pause overlay when not connected */}
@@ -229,7 +254,7 @@ export default function App() {
           }}
         >
           <button
-            onClick={requestPatterns}
+            onClick={openAnalysisModal}
             disabled={status !== "connected"}
             style={{
               padding: "10px 14px",
@@ -240,10 +265,17 @@ export default function App() {
               cursor: status === "connected" ? "pointer" : "not-allowed",
             }}
           >
-            Analyze Patterns
+            Analyze Patterns (Modal)
           </button>
         </div>
       </div>
+
+      {/* Pattern results modal (pauses video & emission while open) */}
+      <PatternModal
+        open={isModalOpen}
+        items={modalItems}
+        onClose={closeModal}
+      />
     </div>
   );
 }
