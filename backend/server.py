@@ -7,8 +7,10 @@ import numpy as np
 from flask import Flask
 from flask_socketio import SocketIO, emit
 
-from backend.preprocess.bg_blur import BgBlur, BgBlurConfig
-from backend.preprocess.utils import clamp_xywh, parse_det, xyxy_to_xywh
+from services.ai_schemas import PatternRequest
+from preprocess.bg_blur import BgBlur, BgBlurConfig
+from preprocess.utils import clamp_xywh, parse_det, xyxy_to_xywh
+from services.ai_client import AIClient
 from detection.yolo_detector import YoloClothesDetector
 from config import defaults
 
@@ -17,6 +19,8 @@ bg_blur = BgBlur(BgBlurConfig(mask_thresh=0.10, ksize=31,
 
 detector = YoloClothesDetector(weights_path=defaults.MODEL_PATH,
                                device=defaults.DEVICE, imgsz=defaults.IMGSZ, conf=defaults.CONF_THRESH)
+
+ai_client = AIClient()
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -80,13 +84,33 @@ def on_frame(payload: Dict[str, Any]):
 
 
 @socketio.on("analyze_patterns")
-def on_analyze(items):
-    # items: [{id, label, cropDataUrl}]
-    # HERE: call your LLM module (same one we drafted) and return patterns
-    # For now, fake it:
-    out = [{"id": it["id"], "label": it["label"],
-            "pattern": "striped", "confidence": 0.82} for it in items]
-    emit("patterns", out)
+def on_analyze(items: list[PatternRequest]):
+    """
+    items: [{ id, label, cropDataUrl }]
+    Returns: emit("patterns", [{ id, label, pattern, confidence, notes? }])
+    """
+    try:
+        # basic sanity filter: ignore missing/empty data URLs
+        clean: list[PatternRequest] = [
+            it for it in items
+            if isinstance(it.get("id"), str)
+            and isinstance(it.get("label"), str)
+            and isinstance(it.get("cropDataUrl"), str)
+            and it["cropDataUrl"].startswith("data:image/")
+        ]
+        results = ai_client.analyze_batch(clean, max_concurrency=3)
+        print(results)
+        emit("patterns", results)
+    except Exception as e:
+        # Fall back with per-item errors so the modal can show failures
+        fallback = [{
+            "id": it.get("id", f"unk_{i}"),
+            "label": it.get("label", "garment"),
+            "pattern": "other",
+            "confidence": 0.0,
+            "error": f"ServerError: {e}",
+        } for i, it in enumerate(items)]
+        emit("patterns", fallback)
 
 
 if __name__ == "__main__":
