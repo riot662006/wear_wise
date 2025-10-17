@@ -36,5 +36,5 @@ def parse_det(det: Any) -> Tuple[float, float, float, float, float, int]:
         conf = float(det.get("conf", det.get("confidence", 0)))
         cls_idx = int(det.get("cls", det.get("class", 0)))
         return x1, y1, x2, y2, conf, cls_idx
-    x1, y1, x2, y2, conf, cls_idx = det[:6]
+    x1, y1, x2, y2, cls_idx, conf = det[:6]
     return float(x1), float(y1), float(x2), float(y2), float(conf), int(cls_idx)
