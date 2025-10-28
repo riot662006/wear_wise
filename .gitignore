@@ -37,6 +37,9 @@ runs/                         # typical YOLO training outputs
 *.jpeg
 *.png
 
+# but track example images
+!examples/*.png               
+
 # -----------------------
 # Scratch / dev files
 # -----------------------
