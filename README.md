@@ -4,7 +4,7 @@
 **Advisor:** Dr. Yu Zhang  
 **Institution:** Fisk University  
 **Course:** Junior Seminar Project  
-**Repo:** [WearWise (opencv-to-flask)](https://github.com/riot662006/wear_wise/tree/opencv-to-flask)
+**Repo:** [WearWise (main)](https://github.com/riot662006/wear_wise/tree/main)
 
 ---
 
