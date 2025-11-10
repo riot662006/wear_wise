@@ -1,5 +1,5 @@
 {
-  "python.languageServer": "Pylance",
+  "python.languageServer": "None",
   "python.analysis.typeCheckingMode": "standard",
   "python.analysis.useLibraryCodeForTypes": true,
   "python.analysis.autoSearchPaths": true,

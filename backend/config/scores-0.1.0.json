@@ -1,0 +1,31 @@
+{
+  "version": "scores-0.1.0",
+  "weights": {
+    "C": 0.25,
+    "P": 0.15,
+    "T": 0.10,
+    "H": 0.20,
+    "B": 0.20,
+    "R": 0.10
+  },
+  "color": {
+    "dMin": 8.0,
+    "dMax": 35.0,
+    "tauH": 10.0
+  },
+  "pattern": {
+    "strong": 0.6,
+    "mild": 0.3
+  },
+  "texture": {
+    "glossBonus": 0.1
+  },
+  "highlight": {
+    "zThreshold": 1.0
+  },
+  "proportion": {
+    "idealTop": 0.33,
+    "tolerance": 0.17
+  }
+}
+

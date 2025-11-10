@@ -4,7 +4,8 @@ import base64
 from typing import Any, Dict, List
 from PIL import Image
 import numpy as np
-from flask import Flask
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
 from services.ai_schemas import PatternRequest
@@ -13,6 +14,7 @@ from preprocess.utils import clamp_xywh, parse_det, xyxy_to_xywh
 from services.ai_client import AIClient
 from detection.yolo_detector import YoloClothesDetector
 from config import defaults
+from scoring import score_outfit, OutfitFeatures, load_config
 
 bg_blur = BgBlur(BgBlurConfig(mask_thresh=0.10, ksize=31,
                  dilate=2, erode=0, model_selection=1))
@@ -23,6 +25,8 @@ detector = YoloClothesDetector(weights_path=defaults.MODEL_PATH,
 ai_client = AIClient()
 
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173"]}}, supports_credentials=True)
+
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 
@@ -111,6 +115,47 @@ def on_analyze(items: list[PatternRequest]):
             "error": f"ServerError: {e}",
         } for i, it in enumerate(items)]
         emit("patterns", fallback)
+
+
+@app.route("/api/style/score", methods=["POST"])
+def api_style_score():
+    """
+    POST /api/style/score
+    
+    Body: OutfitFeatures (JSON)
+    Returns: StyleScore (JSON)
+    
+    Idempotent: Same input → same output.
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+        
+        # Validate required fields
+        required_fields = ["outfitId", "garments", "colorClusters", "thirdsArea", "domainZ", "extractionVersion"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            return jsonify({"error": f"Missing required fields: {missing}"}), 400
+        
+        # Convert to OutfitFeatures (type checking is lenient for API)
+        features: OutfitFeatures = {
+            "outfitId": str(data["outfitId"]),
+            "garments": data["garments"],
+            "colorClusters": data["colorClusters"],
+            "thirdsArea": data["thirdsArea"],
+            "domainZ": data["domainZ"],
+            "body": data.get("body"),
+            "extractionVersion": str(data["extractionVersion"]),
+        }
+        
+        # Score the outfit
+        result = score_outfit(features)
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"Scoring failed: {str(e)}"}), 500
 
 
 if __name__ == "__main__":

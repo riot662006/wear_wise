@@ -3,8 +3,11 @@ import { useSocket } from "./hooks/useSocket";
 
 import ConnectionOverlay from "./components/ConnectionOverlay";
 import PatternModal, { type PatternItem } from "./components/PatternModal";
+import StyleScoreModal from "./components/StyleScoreModal";
 import { BoundingBoxOverlay } from "./components/BoundingBoxOverlay";
 import type { PatternResult, SegmentationPayload } from "./types/socket";
+import { createOutfitFeatures } from "./utils/outfitFeatures";
+import type { OutfitFeatures } from "./types/styleScore";
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -19,6 +22,9 @@ export default function App() {
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalItems, setModalItems] = useState<PatternItem[]>([]);
+  const [isScoreModalOpen, setIsScoreModalOpen] = useState(false);
+  const [outfitFeatures, setOutfitFeatures] = useState<OutfitFeatures | null>(null);
+  const [patternResults, setPatternResults] = useState<PatternResult[]>([]);
 
   // Socket event wiring
   useEffect(() => {
@@ -30,6 +36,9 @@ export default function App() {
       inflight.current = false;
     };
     const onPatterns = (res: PatternResult[]) => {
+      // Store pattern results for style scoring
+      setPatternResults(res);
+      
       // merge results into modal items by id
       setModalItems((prev) =>
         prev.map((it) => {
@@ -87,10 +96,10 @@ export default function App() {
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const shouldPlay = status === "connected" && !isModalOpen;
+    const shouldPlay = status === "connected" && !isModalOpen && !isScoreModalOpen;
     if (shouldPlay) v.play().catch(() => {});
     else v.pause();
-  }, [status, isModalOpen]);
+  }, [status, isModalOpen, isScoreModalOpen]);
 
   // Frame loop (only when connected AND modal is closed)
   useEffect(() => {
@@ -126,7 +135,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [socketRef, status, isModalOpen]);
+  }, [socketRef, status, isModalOpen, isScoreModalOpen]);
 
   // measure render box
   useEffect(() => {
@@ -177,6 +186,22 @@ export default function App() {
     setIsModalOpen(false); // video + emission resumes via effects
   };
 
+  const openScoreModal = () => {
+    if (!seg || patternResults.length === 0) {
+      alert("Please analyze patterns first before scoring style.");
+      return;
+    }
+    
+    // Create outfit features from current segmentation and patterns
+    const features = createOutfitFeatures(seg, patternResults);
+    setOutfitFeatures(features);
+    setIsScoreModalOpen(true);
+  };
+
+  const closeScoreModal = () => {
+    setIsScoreModalOpen(false);
+  };
+
   return (
     <div
       style={{
@@ -221,6 +246,7 @@ export default function App() {
             display: "flex",
             gap: 8,
             zIndex: 10,
+            flexWrap: "wrap",
           }}
         >
           <button
@@ -235,7 +261,27 @@ export default function App() {
               cursor: status === "connected" ? "pointer" : "not-allowed",
             }}
           >
-            Analyze Patterns (Modal)
+            Analyze Patterns
+          </button>
+          <button
+            onClick={openScoreModal}
+            disabled={status !== "connected" || !seg || patternResults.length === 0}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 10,
+              border: "1px solid #444",
+              background:
+                status === "connected" && seg && patternResults.length > 0
+                  ? "#1a4d2e"
+                  : "#333",
+              color: "#fff",
+              cursor:
+                status === "connected" && seg && patternResults.length > 0
+                  ? "pointer"
+                  : "not-allowed",
+            }}
+          >
+            Score Style
           </button>
         </div>
       </div>
@@ -245,6 +291,13 @@ export default function App() {
         open={isModalOpen}
         items={modalItems}
         onClose={closeModal}
+      />
+
+      {/* Style score modal */}
+      <StyleScoreModal
+        open={isScoreModalOpen}
+        onClose={closeScoreModal}
+        features={outfitFeatures}
       />
     </div>
   );

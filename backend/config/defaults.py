@@ -5,7 +5,7 @@ import torch
 MAIN_WIN = "Smart Mirror (MVP)"
 
 # Model
-MODEL_PATH = Path("models/yolov8n.pt")  # <-- update if needed
+MODEL_PATH = Path("backend/models/yolov8n.pt")  # <-- update if needed
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 IMGSZ = 960        # YOLO inference size (try 640/768/960/1280)
 CONF_THRESH = 0.25 # detection confidence
