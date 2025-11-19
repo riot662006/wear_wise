@@ -1,10 +1,11 @@
 # server.py
 import io
 import base64
+import time
 from typing import Any, Dict, List
 from PIL import Image
 import numpy as np
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 
@@ -15,6 +16,7 @@ from services.ai_client import AIClient
 from detection.yolo_detector import YoloClothesDetector
 from config import defaults
 from scoring import score_outfit, OutfitFeatures, load_config
+from scoring.features import create_outfit_features
 
 bg_blur = BgBlur(BgBlurConfig(mask_thresh=0.10, ksize=31,
                  dilate=2, erode=0, model_selection=1))
@@ -30,11 +32,186 @@ CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173"]}}, support
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 
+# In-memory profiling buffer (simple, non-persistent). Use GET /api/profiling to inspect.
+profiling_buffer: list[dict] = []
+PROFILING_MAX = 200
+
+
+def record_profile(entry: dict) -> None:
+    """Append a profiling entry (bounded buffer)."""
+    try:
+        entry["ts"] = time.time()
+        profiling_buffer.append(entry)
+        # trim
+        if len(profiling_buffer) > PROFILING_MAX:
+            del profiling_buffer[0 : len(profiling_buffer) - PROFILING_MAX]
+    except Exception:
+        pass
+
+
+@app.route("/api/extract/features", methods=["POST"])
+def api_extract_features():
+    """
+    POST /api/extract/features
+
+    Body: { segmentation: {...}, patterns: [...], outfitId?: str, profile?: bool }
+    Returns: OutfitFeatures (JSON)
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        seg = data.get("segmentation")
+        patterns = data.get("patterns", [])
+        outfit_id = data.get("outfitId")
+        want_profile = bool(data.get("profile", False) or request.args.get("profile") == "1")
+
+        if not seg or not isinstance(patterns, list):
+            return jsonify({"error": "Missing segmentation or patterns"}), 400
+
+        t0 = time.perf_counter()
+        features = create_outfit_features(seg, patterns, outfit_id)
+        extraction_ms = (time.perf_counter() - t0) * 1000.0
+
+        # record profiling
+        record_profile({"type": "extract_features", "extraction_ms": round(extraction_ms, 2), "items": len(patterns)})
+
+        resp = {"features": features}
+        if want_profile:
+            resp["profiling"] = {"extraction_ms": round(extraction_ms, 2)}
+
+        return jsonify(resp), 200
+    except Exception as e:
+        return jsonify({"error": f"Feature extraction failed: {e}"}), 500
+
+
+
+@app.route("/api/profiling", methods=["GET", "POST"])
+def api_profiling():
+    """GET returns recent profiling entries. POST with {"clear": true} clears the buffer."""
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        if body.get("clear"):
+            profiling_buffer.clear()
+            return jsonify({"cleared": True}), 200
+        return jsonify({"error": "Unsupported POST body"}), 400
+
+    # GET
+    return jsonify({"count": len(profiling_buffer), "entries": profiling_buffer}), 200
+
+
+@app.route("/api/process_image", methods=["POST"])
+def api_process_image():
+    """
+    End-to-end processing: detect -> analyze patterns -> extract features -> score
+
+    Body (JSON): { dataUrl: string (data:image/...), srcW: int, srcH: int, outfitId?: str, profile?: bool }
+    Returns: {
+      segmentation, patterns, features, score, profiling: { detect_ms, analyze_ms, extraction_ms, scoring_ms }
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing request body"}), 400
+
+        data_url = data.get("dataUrl")
+        srcW = int(data.get("srcW", 0))
+        srcH = int(data.get("srcH", 0))
+        outfit_id = data.get("outfitId")
+        want_profile = bool(data.get("profile", False) or request.args.get("profile") == "1")
+
+        if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+            return jsonify({"error": "Missing or invalid dataUrl"}), 400
+
+        # decode image
+        b64 = data_url.split(",", 1)[1]
+        img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        arr = np.array(img)
+
+        # run detection/segmentation
+        t0 = time.perf_counter()
+        seg = segment_frame(arr, srcW=srcW or img.width, srcH=srcH or img.height)
+        detect_ms = (time.perf_counter() - t0) * 1000.0
+
+        # build crops for analysis
+        crops: List[Dict[str, Any]] = []
+        for it in seg.get("items", []):
+            bid = it.get("id")
+            label = it.get("label", "garment")
+            x, y, w, h = it.get("bbox", [0, 0, 0, 0])
+            # ensure integer bounds and clip
+            left = int(max(0, round(x)))
+            upper = int(max(0, round(y)))
+            right = int(min(img.width, round(x + w)))
+            lower = int(min(img.height, round(y + h)))
+            if right <= left or lower <= upper:
+                continue
+
+            crop = img.crop((left, upper, right, lower))
+            buf = io.BytesIO()
+            crop.save(buf, format="JPEG", quality=90)
+            b = base64.b64encode(buf.getvalue()).decode("ascii")
+            crops.append({"id": bid, "label": label, "cropDataUrl": f"data:image/jpeg;base64,{b}"})
+
+        # analyze patterns
+        t1 = time.perf_counter()
+        patterns = ai_client.analyze_batch(crops, max_concurrency=3)
+        analyze_ms = (time.perf_counter() - t1) * 1000.0
+
+        # create features and score
+        t2 = time.perf_counter()
+        features = create_outfit_features(seg, patterns, outfit_id)
+        extraction_ms = (time.perf_counter() - t2) * 1000.0
+
+        t3 = time.perf_counter()
+        score = score_outfit(features)
+        scoring_ms = (time.perf_counter() - t3) * 1000.0
+
+        resp: Dict[str, Any] = {
+            "segmentation": seg,
+            "patterns": patterns,
+            "features": features,
+            "score": score,
+        }
+
+        if want_profile:
+            resp["profiling"] = {
+                "detect_ms": round(detect_ms, 2),
+                "analyze_ms": round(analyze_ms, 2),
+                "extraction_ms": round(extraction_ms, 2),
+                "scoring_ms": round(scoring_ms, 2),
+            }
+
+        # record combined process profiling
+        try:
+            record_profile({
+                "type": "process_image",
+                "detect_ms": round(detect_ms, 2),
+                "analyze_ms": round(analyze_ms, 2),
+                "extraction_ms": round(extraction_ms, 2),
+                "scoring_ms": round(scoring_ms, 2),
+                "items": len(patterns),
+            })
+        except Exception:
+            pass
+
+        return jsonify(resp), 200
+    except Exception as e:
+        return jsonify({"error": f"Process failed: {e}"}), 500
+
+
 def segment_frame(arr_rgb: np.ndarray, srcW: int, srcH: int) -> dict:
     Hd, Wd = arr_rgb.shape[:2]
 
+    t0 = time.perf_counter()
     arr_rgb_for_det = bg_blur.apply(arr_rgb)
+    t_blur = (time.perf_counter() - t0) * 1000.0
+
+    t1 = time.perf_counter()
     dets = detector.predict(arr_rgb_for_det)
+    t_det = (time.perf_counter() - t1) * 1000.0
 
     sx = srcW / Wd
     sy = srcH / Hd
@@ -65,7 +242,14 @@ def segment_frame(arr_rgb: np.ndarray, srcW: int, srcH: int) -> dict:
         })
 
     # return the **video-native** size
-    return {"width": srcW, "height": srcH, "items": items}
+    profiling = {"bg_blur_ms": round(t_blur, 2), "detection_ms": round(t_det, 2), "total_ms": round(t_blur + t_det, 2)}
+    # record segment profiling
+    try:
+        record_profile({"type": "segment", "bg_blur_ms": round(t_blur, 2), "detection_ms": round(t_det, 2), "total_ms": round(t_blur + t_det, 2), "items": len(items)})
+    except Exception:
+        pass
+
+    return {"width": srcW, "height": srcH, "items": items, "profiling": profiling}
 
 
 @socketio.on("frame")
@@ -102,9 +286,19 @@ def on_analyze(items: list[PatternRequest]):
             and isinstance(it.get("cropDataUrl"), str)
             and it["cropDataUrl"].startswith("data:image/")
         ]
+        t0 = time.perf_counter()
         results = ai_client.analyze_batch(clean, max_concurrency=3)
+        analyze_ms = (time.perf_counter() - t0) * 1000.0
         print(results)
+        # Emit results as before for compatibility
         emit("patterns", results)
+        # Also emit profiling info separately so the client can monitor latency
+        emit("patterns_profiling", {"analyze_ms": round(analyze_ms, 2), "items": len(results)})
+        # record analyze profiling
+        try:
+            record_profile({"type": "analyze_patterns", "analyze_ms": round(analyze_ms, 2), "items": len(results)})
+        except Exception:
+            pass
     except Exception as e:
         # Fall back with per-item errors so the modal can show failures
         fallback = [{
@@ -115,6 +309,11 @@ def on_analyze(items: list[PatternRequest]):
             "error": f"ServerError: {e}",
         } for i, it in enumerate(items)]
         emit("patterns", fallback)
+        emit("patterns_profiling", {"analyze_ms": 0.0, "items": len(fallback)})
+        try:
+            record_profile({"type": "analyze_patterns", "analyze_ms": 0.0, "items": len(fallback)})
+        except Exception:
+            pass
 
 
 @app.route("/api/style/score", methods=["POST"])
@@ -128,6 +327,7 @@ def api_style_score():
     Idempotent: Same input → same output.
     """
     try:
+        req_start = time.perf_counter()
         data = request.get_json()
         if not data:
             return jsonify({"error": "Missing request body"}), 400
@@ -138,20 +338,52 @@ def api_style_score():
         if missing:
             return jsonify({"error": f"Missing required fields: {missing}"}), 400
         
-        # Convert to OutfitFeatures (type checking is lenient for API)
-        features: OutfitFeatures = {
-            "outfitId": str(data["outfitId"]),
-            "garments": data["garments"],
-            "colorClusters": data["colorClusters"],
-            "thirdsArea": data["thirdsArea"],
-            "domainZ": data["domainZ"],
-            "body": data.get("body"),
-            "extractionVersion": str(data["extractionVersion"]),
-        }
-        
-        # Score the outfit
+        # Support two modes:
+        # 1) Caller provides full OutfitFeatures (backwards compatible)
+        # 2) Caller provides `segmentation` + `patterns` and we build features server-side
+        want_profile = bool(request.args.get("profile") == "1" or data.get("profile", False))
+
+        if all(k in data for k in ("outfitId", "garments", "colorClusters", "thirdsArea", "domainZ", "extractionVersion")):
+            features: OutfitFeatures = {
+                "outfitId": str(data["outfitId"]),
+                "garments": data["garments"],
+                "colorClusters": data["colorClusters"],
+                "thirdsArea": data["thirdsArea"],
+                "domainZ": data["domainZ"],
+                "body": data.get("body"),
+                "extractionVersion": str(data["extractionVersion"]),
+            }
+        elif data.get("segmentation") and isinstance(data.get("patterns"), list):
+            # build features server-side
+            features = create_outfit_features(data["segmentation"], data["patterns"], data.get("outfitId"))
+        else:
+            return jsonify({"error": "Missing or malformed feature data"}), 400
+
+        # Score the outfit and capture scoring latency
+        t0 = time.perf_counter()
         result = score_outfit(features)
-        
+        scoring_ms = (time.perf_counter() - t0) * 1000.0
+
+        # attach profiling into debug to avoid breaking clients that expect the score shape
+        try:
+            if isinstance(result.get("debug"), dict):
+                result["debug"]["profiling"] = {"scoring_ms": round(scoring_ms, 2)}
+            else:
+                result["debug"] = {"profiling": {"scoring_ms": round(scoring_ms, 2)}}
+        except Exception:
+            result["debug"] = {"profiling": {"scoring_ms": round(scoring_ms, 2)}}
+
+        if want_profile:
+            # add api-level latency too (measured for this endpoint)
+            api_ms = (time.perf_counter() - req_start) * 1000.0
+            result["debug"]["profiling"]["api_ms"] = round(api_ms, 2)
+
+        # record profiling
+        try:
+            record_profile({"type": "style_score", "scoring_ms": round(scoring_ms, 2), "api_ms": round(api_ms, 2) if want_profile else None, "items": len(features.get("garments", []))})
+        except Exception:
+            pass
+
         return jsonify(result), 200
         
     except Exception as e:
