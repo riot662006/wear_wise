@@ -239,7 +239,7 @@ export default function App() {
               cursor: status === "connected" ? "pointer" : "not-allowed",
             }}
           >
-            Analyze Patterns
+            Analyze Style
           </button>
           {/* Score action now lives inside the Results modal */}
         </div>
