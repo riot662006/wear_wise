@@ -11,7 +11,7 @@ from flask_socketio import SocketIO, emit
 
 from services.ai_schemas import PatternRequest
 from preprocess.bg_blur import BgBlur, BgBlurConfig
-from preprocess.utils import clamp_xywh, parse_det, xyxy_to_xywh
+from preprocess.utils import clamp_xywh, compute_iou, parse_det, xyxy_to_xywh
 from services.ai_client import AIClient
 from detection.yolo_detector import YoloClothesDetector
 from config import defaults
@@ -27,7 +27,8 @@ detector = YoloClothesDetector(weights_path=defaults.MODEL_PATH,
 ai_client = AIClient()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173"]}}, supports_credentials=True)
+CORS(app, resources={
+     r"/api/*": {"origins": ["http://localhost:5173"]}}, supports_credentials=True)
 
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -44,7 +45,7 @@ def record_profile(entry: dict) -> None:
         profiling_buffer.append(entry)
         # trim
         if len(profiling_buffer) > PROFILING_MAX:
-            del profiling_buffer[0 : len(profiling_buffer) - PROFILING_MAX]
+            del profiling_buffer[0: len(profiling_buffer) - PROFILING_MAX]
     except Exception:
         pass
 
@@ -65,7 +66,8 @@ def api_extract_features():
         seg = data.get("segmentation")
         patterns = data.get("patterns", [])
         outfit_id = data.get("outfitId")
-        want_profile = bool(data.get("profile", False) or request.args.get("profile") == "1")
+        want_profile = bool(data.get("profile", False)
+                            or request.args.get("profile") == "1")
 
         if not seg or not isinstance(patterns, list):
             return jsonify({"error": "Missing segmentation or patterns"}), 400
@@ -75,7 +77,8 @@ def api_extract_features():
         extraction_ms = (time.perf_counter() - t0) * 1000.0
 
         # record profiling
-        record_profile({"type": "extract_features", "extraction_ms": round(extraction_ms, 2), "items": len(patterns)})
+        record_profile({"type": "extract_features", "extraction_ms": round(
+            extraction_ms, 2), "items": len(patterns)})
 
         resp = {"features": features}
         if want_profile:
@@ -84,7 +87,6 @@ def api_extract_features():
         return jsonify(resp), 200
     except Exception as e:
         return jsonify({"error": f"Feature extraction failed: {e}"}), 500
-
 
 
 @app.route("/api/profiling", methods=["GET", "POST"])
@@ -120,7 +122,8 @@ def api_process_image():
         srcW = int(data.get("srcW", 0))
         srcH = int(data.get("srcH", 0))
         outfit_id = data.get("outfitId")
-        want_profile = bool(data.get("profile", False) or request.args.get("profile") == "1")
+        want_profile = bool(data.get("profile", False)
+                            or request.args.get("profile") == "1")
 
         if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
             return jsonify({"error": "Missing or invalid dataUrl"}), 400
@@ -132,7 +135,8 @@ def api_process_image():
 
         # run detection/segmentation
         t0 = time.perf_counter()
-        seg = segment_frame(arr, srcW=srcW or img.width, srcH=srcH or img.height)
+        seg = segment_frame(arr, srcW=srcW or img.width,
+                            srcH=srcH or img.height)
         detect_ms = (time.perf_counter() - t0) * 1000.0
 
         # build crops for analysis
@@ -153,7 +157,8 @@ def api_process_image():
             buf = io.BytesIO()
             crop.save(buf, format="JPEG", quality=90)
             b = base64.b64encode(buf.getvalue()).decode("ascii")
-            crops.append({"id": bid, "label": label, "cropDataUrl": f"data:image/jpeg;base64,{b}"})
+            crops.append({"id": bid, "label": label,
+                         "cropDataUrl": f"data:image/jpeg;base64,{b}"})
 
         # analyze patterns
         t1 = time.perf_counter()
@@ -241,15 +246,138 @@ def segment_frame(arr_rgb: np.ndarray, srcW: int, srcH: int) -> dict:
             "score": round(float(conf), 3),
         })
 
+    # Remove conflicting garment detections (trousers vs shorts, etc)
+    items = _deduplicate_conflicting_garments(items)
+
+    # Filter overlapping detection (>70% IoU), keep higher confidence
+    items = _filter_overlapping_items(items, iou_threshold=0.70)
+
     # return the **video-native** size
-    profiling = {"bg_blur_ms": round(t_blur, 2), "detection_ms": round(t_det, 2), "total_ms": round(t_blur + t_det, 2)}
+    profiling = {"bg_blur_ms": round(t_blur, 2), "detection_ms": round(
+        t_det, 2), "total_ms": round(t_blur + t_det, 2)}
     # record segment profiling
     try:
-        record_profile({"type": "segment", "bg_blur_ms": round(t_blur, 2), "detection_ms": round(t_det, 2), "total_ms": round(t_blur + t_det, 2), "items": len(items)})
+        record_profile({"type": "segment", "bg_blur_ms": round(t_blur, 2), "detection_ms": round(
+            t_det, 2), "total_ms": round(t_blur + t_det, 2), "items": len(items)})
     except Exception:
         pass
 
     return {"width": srcW, "height": srcH, "items": items, "profiling": profiling}
+
+
+def _deduplicate_conflicting_garments(items: List[Dict]) -> List[Dict]:
+    """
+    Remove conflicting garment detections (e.g., trousers + shorts).
+    When conflicting items are detected, favor more specific categories:
+    - shorts, skirt > trousers
+    - short sleeve top, sleeveless top > long sleeve top
+    """
+    if not items:
+        return items
+
+    # Define conflicting garment groups with preference order (higher index = more favored)
+    conflict_groups = [
+        [
+            ("trousers", 0),
+            ("shorts", 2),
+            ("skirt", 2),
+        ],
+        [
+            ("long_sleeve_top", 0),
+            ("short_sleeve_top", 1),
+        ],
+    ]
+
+    def get_conflict_group_and_priority(label: str) -> tuple:
+        """Return (conflict_group, priority) or (None, 0)."""
+        label_lower = label.lower()
+        for group in conflict_groups:
+            for garment_name, priority in group:
+                if label_lower in garment_name or garment_name in label_lower:
+                    return (group, priority)
+        return (None, 0)
+
+    kept = []
+    removed_indices = set()
+
+    for i, item in enumerate(items):
+        if i in removed_indices:
+            continue
+
+        label_i = item.get("label", "").lower()
+        conf_i = item.get("score", 0)
+        conflict_group_i, priority_i = get_conflict_group_and_priority(label_i)
+
+        if not conflict_group_i:
+            kept.append(item)
+            continue
+
+        # Check for conflicts with other items
+        should_skip_current = False
+        for j, other in enumerate(items):
+            if j <= i or j in removed_indices:
+                continue
+
+            label_j = other.get("label", "").lower()
+            conflict_group_j, priority_j = get_conflict_group_and_priority(
+                label_j)
+
+            # If both are in the same conflict group
+            if conflict_group_i == conflict_group_j:
+                iou = compute_iou(item["bbox"], other["bbox"])
+                # If IoU > 40%, they're likely overlapping detections
+                if iou > 0.40:
+                    conf_j = other.get("score", 0)
+
+                    # Decision logic:
+                    # 1. Favor higher priority (more specific category)
+                    # 2. If same priority, favor higher confidence
+                    if priority_i > priority_j:
+                        # Current item is more specific, remove the other
+                        removed_indices.add(j)
+                    elif priority_j > priority_i:
+                        # Other item is more specific, remove current
+                        should_skip_current = True
+                        break
+                    else:
+                        # Same priority, keep higher confidence
+                        if conf_i >= conf_j:
+                            removed_indices.add(j)
+                        else:
+                            should_skip_current = True
+                            break
+
+        if not should_skip_current:
+            kept.append(item)
+        else:
+            removed_indices.add(i)
+
+    return kept
+
+
+def _filter_overlapping_items(items: List[Dict], iou_threshold: float = 0.70) -> List[Dict]:
+    """Remove items with >iou_threshold overlap, keeping the one with higher confidence."""
+    if not items:
+        return items
+
+    # Sort by score descending
+    sorted_items = sorted(
+        items, key=lambda it: it.get("score", 0), reverse=True)
+    kept = []
+
+    for item in sorted_items:
+        # Check if this item overlaps significantly with any kept item
+        overlaps_with_kept = False
+        for kept_item in kept:
+            iou = compute_iou(item["bbox"], kept_item["bbox"])
+            if iou > iou_threshold:
+                overlaps_with_kept = True
+                break
+
+        if not overlaps_with_kept:
+            kept.append(item)
+
+    return kept
 
 
 @socketio.on("frame")
@@ -293,10 +421,12 @@ def on_analyze(items: list[PatternRequest]):
         # Emit results as before for compatibility
         emit("patterns", results)
         # Also emit profiling info separately so the client can monitor latency
-        emit("patterns_profiling", {"analyze_ms": round(analyze_ms, 2), "items": len(results)})
+        emit("patterns_profiling", {"analyze_ms": round(
+            analyze_ms, 2), "items": len(results)})
         # record analyze profiling
         try:
-            record_profile({"type": "analyze_patterns", "analyze_ms": round(analyze_ms, 2), "items": len(results)})
+            record_profile({"type": "analyze_patterns", "analyze_ms": round(
+                analyze_ms, 2), "items": len(results)})
         except Exception:
             pass
     except Exception as e:
@@ -311,7 +441,8 @@ def on_analyze(items: list[PatternRequest]):
         emit("patterns", fallback)
         emit("patterns_profiling", {"analyze_ms": 0.0, "items": len(fallback)})
         try:
-            record_profile({"type": "analyze_patterns", "analyze_ms": 0.0, "items": len(fallback)})
+            record_profile({"type": "analyze_patterns",
+                           "analyze_ms": 0.0, "items": len(fallback)})
         except Exception:
             pass
 
@@ -320,10 +451,10 @@ def on_analyze(items: list[PatternRequest]):
 def api_style_score():
     """
     POST /api/style/score
-    
+
     Body: OutfitFeatures (JSON)
     Returns: StyleScore (JSON)
-    
+
     Idempotent: Same input → same output.
     """
     try:
@@ -331,17 +462,19 @@ def api_style_score():
         data = request.get_json()
         if not data:
             return jsonify({"error": "Missing request body"}), 400
-        
+
         # Validate required fields
-        required_fields = ["outfitId", "garments", "colorClusters", "thirdsArea", "domainZ", "extractionVersion"]
+        required_fields = ["outfitId", "garments", "colorClusters",
+                           "thirdsArea", "domainZ", "extractionVersion"]
         missing = [f for f in required_fields if f not in data]
         if missing:
             return jsonify({"error": f"Missing required fields: {missing}"}), 400
-        
+
         # Support two modes:
         # 1) Caller provides full OutfitFeatures (backwards compatible)
         # 2) Caller provides `segmentation` + `patterns` and we build features server-side
-        want_profile = bool(request.args.get("profile") == "1" or data.get("profile", False))
+        want_profile = bool(request.args.get("profile") ==
+                            "1" or data.get("profile", False))
 
         if all(k in data for k in ("outfitId", "garments", "colorClusters", "thirdsArea", "domainZ", "extractionVersion")):
             features: OutfitFeatures = {
@@ -355,7 +488,8 @@ def api_style_score():
             }
         elif data.get("segmentation") and isinstance(data.get("patterns"), list):
             # build features server-side
-            features = create_outfit_features(data["segmentation"], data["patterns"], data.get("outfitId"))
+            features = create_outfit_features(
+                data["segmentation"], data["patterns"], data.get("outfitId"))
         else:
             return jsonify({"error": "Missing or malformed feature data"}), 400
 
@@ -367,11 +501,14 @@ def api_style_score():
         # attach profiling into debug to avoid breaking clients that expect the score shape
         try:
             if isinstance(result.get("debug"), dict):
-                result["debug"]["profiling"] = {"scoring_ms": round(scoring_ms, 2)}
+                result["debug"]["profiling"] = {
+                    "scoring_ms": round(scoring_ms, 2)}
             else:
-                result["debug"] = {"profiling": {"scoring_ms": round(scoring_ms, 2)}}
+                result["debug"] = {"profiling": {
+                    "scoring_ms": round(scoring_ms, 2)}}
         except Exception:
-            result["debug"] = {"profiling": {"scoring_ms": round(scoring_ms, 2)}}
+            result["debug"] = {"profiling": {
+                "scoring_ms": round(scoring_ms, 2)}}
 
         if want_profile:
             # add api-level latency too (measured for this endpoint)
@@ -380,12 +517,13 @@ def api_style_score():
 
         # record profiling
         try:
-            record_profile({"type": "style_score", "scoring_ms": round(scoring_ms, 2), "api_ms": round(api_ms, 2) if want_profile else None, "items": len(features.get("garments", []))})
+            record_profile({"type": "style_score", "scoring_ms": round(scoring_ms, 2), "api_ms": round(
+                api_ms, 2) if want_profile else None, "items": len(features.get("garments", []))})
         except Exception:
             pass
 
         return jsonify(result), 200
-        
+
     except Exception as e:
         return jsonify({"error": f"Scoring failed: {str(e)}"}), 500
 
