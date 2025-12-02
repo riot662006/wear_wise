@@ -72,6 +72,8 @@ class AIClient:
                 "label": req["label"],
                 "pattern": data.get("pattern", "other"),
                 "confidence": float(data.get("confidence", 0.0)),
+                "material": data.get("material", "other"),
+                "materialConfidence": float(data.get("materialConfidence", 0.0)),
                 "notes": data.get("notes"),
             }
         except Exception as e:
@@ -80,6 +82,8 @@ class AIClient:
                 "label": req["label"],
                 "pattern": "other",
                 "confidence": 0.0,
+                "material": "other",
+                "materialConfidence": 0.0,
                 "notes": None,
                 "error": f"ParseError: {type(e).__name__}: {e}",
             }
@@ -111,5 +115,7 @@ class AIClient:
                 "label": req["label"],
                 "pattern": "other",
                 "confidence": 0.0,
+                "material": "other",
+                "materialConfidence": 0.0,
                 "error": f"{type(e).__name__}: {e}",
             }

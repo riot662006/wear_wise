@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Literal, TypedDict, Required, Any
 
 Material = Literal[
-    "denim", "cotton", "wool", "knit", "leather", "satin", "silk", "synthetic"
+    "denim", "cotton", "wool", "knit", "leather", "satin", "silk", "synthetic", "linen", "other"
 ]
 
 PatternType = Literal[
@@ -26,6 +26,7 @@ class GarmentFeatures(TypedDict):
     areaPct: float  # 0..1 relative area on body mask
     colorLAB: tuple[float, float, float]  # [L, a, b]
     material: Material
+    materialConfidence: float
     patternType: PatternType
     patternStrength: float  # 0..1
     glossIndex: float  # 0..1

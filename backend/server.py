@@ -55,7 +55,13 @@ def api_extract_features():
     """
     POST /api/extract/features
 
-    Body: { segmentation: {...}, patterns: [...], outfitId?: str, profile?: bool }
+    Body: { 
+        segmentation: {...}, 
+        patterns: [...], 
+        cropImages?: {garmentId: base64DataUrl},
+        outfitId?: str, 
+        profile?: bool 
+    }
     Returns: OutfitFeatures (JSON)
     """
     try:
@@ -65,6 +71,7 @@ def api_extract_features():
 
         seg = data.get("segmentation")
         patterns = data.get("patterns", [])
+        crop_images = data.get("cropImages", {})
         outfit_id = data.get("outfitId")
         want_profile = bool(data.get("profile", False)
                             or request.args.get("profile") == "1")
@@ -73,7 +80,7 @@ def api_extract_features():
             return jsonify({"error": "Missing segmentation or patterns"}), 400
 
         t0 = time.perf_counter()
-        features = create_outfit_features(seg, patterns, outfit_id)
+        features = create_outfit_features(seg, patterns, outfit_id, crop_images=crop_images)
         extraction_ms = (time.perf_counter() - t0) * 1000.0
 
         # record profiling
@@ -165,9 +172,12 @@ def api_process_image():
         patterns = ai_client.analyze_batch(crops, max_concurrency=3)
         analyze_ms = (time.perf_counter() - t1) * 1000.0
 
+        # Build crop_images dict for real feature extraction
+        crop_images = {crop["id"]: crop["cropDataUrl"] for crop in crops}
+
         # create features and score
         t2 = time.perf_counter()
-        features = create_outfit_features(seg, patterns, outfit_id)
+        features = create_outfit_features(seg, patterns, outfit_id, crop_images=crop_images)
         extraction_ms = (time.perf_counter() - t2) * 1000.0
 
         t3 = time.perf_counter()

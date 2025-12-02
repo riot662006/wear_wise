@@ -22,6 +22,7 @@ export default function ResultModal({
 }) {
   const [active, setActive] = useState<"analysis" | "score">("analysis");
   const [features, setFeatures] = useState<OutfitFeatures | null>(null);
+  const [extractingFeatures, setExtractingFeatures] = useState(false);
 
   const patternsReady = useMemo(() => {
     if (items.length === 0) return false;
@@ -33,7 +34,28 @@ export default function ResultModal({
   const handleTab = (t: "analysis" | "score") => {
     if (t === "score") {
       if (!seg || !patternsReady) return;
-      if (!features) setFeatures(createOutfitFeatures(seg, patterns));
+      
+      // Extract features from backend (async)
+      if (!features) {
+        setExtractingFeatures(true);
+
+        // Build map of crop images (id -> dataUrl) from modal items
+        const cropMap: Record<string, string> = {};
+        items.forEach((it) => {
+          if (it.cropDataUrl) cropMap[it.id] = it.cropDataUrl;
+        });
+
+        createOutfitFeatures(seg, patterns, undefined, cropMap)
+          .then((f) => {
+            setFeatures(f);
+            setExtractingFeatures(false);
+          })
+          .catch((err) => {
+            console.error("Failed to create outfit features:", err);
+            setFeatures(null);
+            setExtractingFeatures(false);
+          });
+      }
     }
     setActive(t);
   };
@@ -81,7 +103,32 @@ export default function ResultModal({
 
       {active === "analysis" && <PatternSection items={items} />}
 
-      {active === "score" && (
+      {active === "score" && extractingFeatures && (
+        <div
+          style={{
+            display: "grid",
+            placeItems: "center",
+            padding: 40,
+            color: "#aaa",
+          }}
+        >
+          <div
+            aria-label="loading"
+            style={{
+              width: 40,
+              height: 40,
+              border: "4px solid rgba(255,255,255,0.2)",
+              borderTopColor: "white",
+              borderRadius: "50%",
+              animation: "spin 1s linear infinite",
+            }}
+          />
+          <div style={{ marginTop: 16 }}>Extracting outfit features...</div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {active === "score" && !extractingFeatures && (
         <ScoreSection
           status={scoreFetcher.status}
           score={scoreFetcher.score}
