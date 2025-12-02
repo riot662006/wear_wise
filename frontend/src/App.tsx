@@ -2,12 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { useSocket } from "./hooks/useSocket";
 
 import ConnectionOverlay from "./components/ConnectionOverlay";
-import PatternModal, { type PatternItem } from "./components/PatternModal";
-import StyleScoreModal from "./components/StyleScoreModal";
+import ResultModal from "./components/ResultModal";
 import { BoundingBoxOverlay } from "./components/BoundingBoxOverlay";
 import type { PatternResult, SegmentationPayload } from "./types/socket";
-import { createOutfitFeatures } from "./utils/outfitFeatures";
-import type { OutfitFeatures } from "./types/styleScore";
+import type { PatternItem } from "./components/PatternSection";
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -19,11 +17,9 @@ export default function App() {
   const [seg, setSeg] = useState<SegmentationPayload | null>(null);
   const [renderSize, setRenderSize] = useState({ w: 0, h: 0 });
 
-  // Modal state
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Result modal state
+  const [isResultOpen, setIsResultOpen] = useState(false);
   const [modalItems, setModalItems] = useState<PatternItem[]>([]);
-  const [isScoreModalOpen, setIsScoreModalOpen] = useState(false);
-  const [outfitFeatures, setOutfitFeatures] = useState<OutfitFeatures | null>(null);
   const [patternResults, setPatternResults] = useState<PatternResult[]>([]);
 
   // Socket event wiring
@@ -38,7 +34,7 @@ export default function App() {
     const onPatterns = (res: PatternResult[]) => {
       // Store pattern results for style scoring
       setPatternResults(res);
-      
+
       // merge results into modal items by id
       setModalItems((prev) =>
         prev.map((it) => {
@@ -96,10 +92,10 @@ export default function App() {
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-    const shouldPlay = status === "connected" && !isModalOpen && !isScoreModalOpen;
+    const shouldPlay = status === "connected" && !isResultOpen;
     if (shouldPlay) v.play().catch(() => {});
     else v.pause();
-  }, [status, isModalOpen, isScoreModalOpen]);
+  }, [status, isResultOpen]);
 
   // Frame loop (only when connected AND modal is closed)
   useEffect(() => {
@@ -113,7 +109,7 @@ export default function App() {
     const tick = () => {
       const socket = socketRef.current;
       const connected = status === "connected";
-      if (!socket || !connected || isModalOpen) {
+      if (!socket || !connected || isResultOpen) {
         raf = requestAnimationFrame(tick);
         return;
       }
@@ -135,7 +131,7 @@ export default function App() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [socketRef, status, isModalOpen, isScoreModalOpen]);
+  }, [socketRef, status, isResultOpen]);
 
   // measure render box
   useEffect(() => {
@@ -148,8 +144,8 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
-  // Opens modal, pauses video/emission (handled by isModalOpen), kicks off analysis
-  const openAnalysisModal = async () => {
+  // Opens result modal (pattern analysis tab) and kicks off analysis
+  const openResultModal = async () => {
     const socket = socketRef.current;
     const v = videoRef.current;
     const s = seg;
@@ -157,7 +153,7 @@ export default function App() {
 
     const crops: PatternItem[] = await Promise.all(
       s.items.map(async (it) => {
-        const [x, y, w, h] = it.bbox; // video-native coords
+        const [x, y, w, h] = it.bbox;
         const c = document.createElement("canvas");
         const cx = c.getContext("2d")!;
         c.width = w;
@@ -175,32 +171,14 @@ export default function App() {
     );
 
     setModalItems(crops);
-    setIsModalOpen(true);
+    setIsResultOpen(true);
     socket.emit(
       "analyze_patterns",
       crops.map(({ id, label, cropDataUrl }) => ({ id, label, cropDataUrl }))
     );
   };
 
-  const closeModal = () => {
-    setIsModalOpen(false); // video + emission resumes via effects
-  };
-
-  const openScoreModal = () => {
-    if (!seg || patternResults.length === 0) {
-      alert("Please analyze patterns first before scoring style.");
-      return;
-    }
-    
-    // Create outfit features from current segmentation and patterns
-    const features = createOutfitFeatures(seg, patternResults);
-    setOutfitFeatures(features);
-    setIsScoreModalOpen(true);
-  };
-
-  const closeScoreModal = () => {
-    setIsScoreModalOpen(false);
-  };
+  const closeResultModal = () => setIsResultOpen(false);
 
   return (
     <div
@@ -250,7 +228,7 @@ export default function App() {
           }}
         >
           <button
-            onClick={openAnalysisModal}
+            onClick={openResultModal}
             disabled={status !== "connected"}
             style={{
               padding: "10px 14px",
@@ -263,41 +241,17 @@ export default function App() {
           >
             Analyze Patterns
           </button>
-          <button
-            onClick={openScoreModal}
-            disabled={status !== "connected" || !seg || patternResults.length === 0}
-            style={{
-              padding: "10px 14px",
-              borderRadius: 10,
-              border: "1px solid #444",
-              background:
-                status === "connected" && seg && patternResults.length > 0
-                  ? "#1a4d2e"
-                  : "#333",
-              color: "#fff",
-              cursor:
-                status === "connected" && seg && patternResults.length > 0
-                  ? "pointer"
-                  : "not-allowed",
-            }}
-          >
-            Score Style
-          </button>
+          {/* Score action now lives inside the Results modal */}
         </div>
       </div>
 
       {/* Pattern results modal (pauses video & emission while open) */}
-      <PatternModal
-        open={isModalOpen}
+      <ResultModal
+        open={isResultOpen}
+        onClose={closeResultModal}
         items={modalItems}
-        onClose={closeModal}
-      />
-
-      {/* Style score modal */}
-      <StyleScoreModal
-        open={isScoreModalOpen}
-        onClose={closeScoreModal}
-        features={outfitFeatures}
+        patterns={patternResults}
+        seg={seg}
       />
     </div>
   );
