@@ -51,8 +51,20 @@ Detects and classifies clothing items (shirts, pants, shorts, etc.) using YOLOv8
 ### ✅ Background Blur Preprocessing
 Uses MediaPipe to isolate the subject and blur the background — improving model focus and visual clarity.
 
-### ✅ AI-Driven Pattern Recognition
-Crops each detected garment and sends it to GPT-4o for pattern identification (e.g., *striped*, *floral*, *graphic*).
+### ✅ AI-Driven Pattern & Material Recognition
+Crops each detected garment and sends it to GPT-4o with structured outputs for:
+- **Pattern identification** (e.g., *striped*, *floral*, *graphic*, *solid*)
+- **Material classification** (e.g., *cotton*, *denim*, *leather*, *wool*, *silk*, *knit*, etc.)
+
+Both predictions include confidence scores for reliability assessment.
+
+### ✅ Real Feature Extraction
+Extracts genuine outfit features from garment crops:
+- **Color Clustering:** K-means clustering in LAB color space to identify dominant colors
+- **Material Inference:** AI-powered material detection with image-based fallback
+- **Gloss Estimation:** Detects shiny/glossy materials using brightness and edge analysis
+- **Pattern Strength:** Measures pattern intensity via local color variance
+- **Proportion Analysis:** Computes area distribution across vertical thirds using bounding boxes
 
 ### ✅ React Live Interface
 Streams live webcam feed with overlayed bounding boxes and garment labels.
@@ -63,7 +75,7 @@ Includes "Score Style" button to get quantifiable style scores with explanations
 Computes 0-100 style scores based on six interpretable factors:
 - **Color Harmony** - 50/30/20 color pyramid and hue harmony via CIEDE2000
 - **Pattern Balance** - Rule of One for patterns (one strong pattern = optimal)
-- **Texture Mix** - Material variety (2-3 ideal) with gloss contrast bonus
+- **Texture Mix** - Material variety (2-3 ideal materials detected via AI) with gloss contrast bonus
 - **Highlight Principle** - Rule of One across four domains
 - **Proportion** - 33/66 visual ratio with optional waist/neck echo
 - **Repetition** - Color echo between accent and accessories
@@ -103,14 +115,16 @@ wear_wise/
 │ │ ├── bg_blur.py           # MediaPipe background blur
 │ │ └── utils.py             # Image processing utilities
 │ ├── services/
-│ │ ├── ai_client.py         # OpenAI GPT-4o API client
-│ │ └── ai_schemas.py        # Pattern analysis schemas
+│ │ ├── ai_client.py         # OpenAI GPT-4o API client (pattern + material)
+│ │ └── ai_schemas.py        # Schema definitions for pattern and material
 │ ├── scoring/               # Style scoring system
 │ │ ├── __init__.py          # Module exports
 │ │ ├── scorer.py            # Main scoring algorithms (6 subscores)
 │ │ ├── color_distance.py    # CIEDE2000 color distance
 │ │ ├── config.py            # Configuration loader
-│ │ ├── types.py             # Type definitions
+│ │ ├── features.py          # Real outfit feature extraction
+│ │ ├── image_features.py    # Image processing (color, gloss, material, pattern)
+│ │ ├── types.py             # Type definitions (GarmentFeatures, OutfitFeatures)
 │ │ ├── example.py           # Usage example
 │ │ └── README.md            # Scoring system documentation
 │ ├── tests/
@@ -124,19 +138,23 @@ wear_wise/
 │ │ ├── App.tsx              # Main React component
 │ │ ├── api/
 │ │ │ └── styleScore.ts      # Style scoring API client
-│ │ ├── components/
-│ │ │ ├── BoundingBoxOverlay.tsx  # SVG overlays for detections
-│ │ │ ├── ConnectionOverlay.tsx   # Connection status indicator
-│ │ │ ├── Modal.tsx               # Base modal component
-│ │ │ ├── PatternModal.tsx        # Pattern analysis modal
-│ │ │ └── StyleScoreModal.tsx     # Style score display modal
-│ │ ├── hooks/
-│ │ │ └── useSocket.ts       # Socket.IO hook
-│ │ ├── types/
-│ │ │ ├── socket.d.ts        # Socket.IO type definitions
-│ │ │ └── styleScore.ts      # Style scoring type definitions
-│ │ └── utils/
-│ │     └── outfitFeatures.ts # Data transformation utilities
+│ ├── components/
+│ │ ├── BoundingBoxOverlay.tsx  # SVG overlays for detections
+│ │ ├── ConnectionOverlay.tsx   # Connection status indicator
+│ │ ├── Modal.tsx               # Base modal component
+│ │ ├── PatternModal.tsx        # Pattern + material analysis modal
+│ │ ├── PatternSection.tsx      # Pattern display component
+│ │ ├── ScoreSection.tsx        # Score display component
+│ │ ├── ResultModal.tsx         # Combined results modal
+│ │ └── StyleScoreModal.tsx     # Style score display modal
+│ ├── hooks/
+│ │ ├── useSocket.ts       # Socket.IO hook
+│ │ └── useStyleScore.ts   # Style score API hook
+│ ├── types/
+│ │ ├── socket.d.ts        # Socket.IO type definitions
+│ │ └── styleScore.ts      # Style scoring type definitions
+│ └── utils/
+│     └── outfitFeatures.ts # Real feature extraction (backend integration)
 │ ├── package.json
 │ └── vite.config.ts
 │
@@ -275,6 +293,7 @@ The style scoring system evaluates outfits based on six interpretable fashion pr
       "areaPct": 0.31,
       "colorLAB": [62, -4, -8],
       "material": "cotton",
+      "materialConfidence": 0.95,
       "patternType": "plaid",
       "patternStrength": 0.72,
       "glossIndex": 0.1
@@ -325,6 +344,124 @@ See `backend/scoring/README.md` for detailed documentation.
 
 ---
 
+## 📊 Profiling & Performance Monitoring
+
+### Overview
+WearWise includes built-in profiling capabilities to track performance metrics across all major operations:
+
+**Available Profiling Endpoints:**
+
+#### 1. Per-Request Profiling
+Add `?profile=1` to any API endpoint to include timing information:
+
+```bash
+# Feature extraction profiling
+POST /api/extract/features?profile=1
+# Returns: { features: {...}, profiling: { extraction_ms: 45.2 } }
+
+# Full process pipeline profiling
+POST /api/process_image?profile=1
+# Returns: {
+#   segmentation, patterns, features, score,
+#   profiling: {
+#     detect_ms: 32.5,
+#     analyze_ms: 2850.3,  // AI model latency
+#     extraction_ms: 45.2,
+#     scoring_ms: 12.1
+#   }
+# }
+
+# Style scoring profiling
+POST /api/style/score?profile=1
+# Returns: { styleScore: 82.6, ..., debug: { profiling: { scoring_ms: 12.1, api_ms: 20.5 } } }
+```
+
+#### 2. Global Profiling Buffer
+The backend maintains an in-memory buffer of recent profiling events:
+
+```bash
+# View recent profiling entries
+GET /api/profiling
+# Returns: { count: 42, entries: [ { type: "process_image", ..., ts: 1733390400.123 }, ... ] }
+
+# Clear the profiling buffer
+POST /api/profiling
+# Body: { "clear": true }
+```
+
+### Profiling Metrics
+
+**Segmentation (`segment_frame`):**
+- `bg_blur_ms` — MediaPipe background blur processing time
+- `detection_ms` — YOLO detection inference time
+- `total_ms` — Combined segmentation time
+
+**Pattern & Material Analysis (`analyze_patterns`):**
+- `analyze_ms` — OpenAI API latency for all crops (includes retry backoff)
+- `items` — Number of garments analyzed
+
+**Feature Extraction (`create_outfit_features`):**
+- `extraction_ms` — Image processing (color clustering, gloss, material inference, pattern strength)
+
+**Style Scoring (`score_outfit`):**
+- `scoring_ms` — Algorithm execution time for all six subscores
+- `api_ms` — Total API endpoint latency (if profile=1)
+
+**Full Pipeline (`process_image`):**
+- `detect_ms` — Segmentation time
+- `analyze_ms` — AI analysis time
+- `extraction_ms` — Feature extraction time
+- `scoring_ms` — Scoring time
+- Combined latency visible in profiling buffer
+
+### Usage Examples
+
+**Monitor a single outfit analysis:**
+```bash
+curl -X POST http://localhost:5000/api/process_image?profile=1 \
+  -H "Content-Type: application/json" \
+  -d '{"dataUrl": "data:image/jpeg;base64,..","srcW": 640, "srcH": 480}'
+```
+
+**Check system performance over time:**
+```bash
+# Get recent profiling data
+curl http://localhost:5000/api/profiling | jq '.entries[-10:]'
+
+# View average latencies
+curl http://localhost:5000/api/profiling | \
+  jq '.entries | group_by(.type) | map({type: .[0].type, avg_ms: (map(.*.ms) | add / length)})'
+```
+
+**Clear buffer periodically:**
+```bash
+curl -X POST http://localhost:5000/api/profiling -d '{"clear": true}'
+```
+
+### Performance Expectations
+
+Typical latencies on CPU (RTX 3090 GPU would be 2-5x faster):
+
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Background blur | 15-25 ms | MediaPipe segmentation |
+| YOLO detection | 25-40 ms | YOLOv8n model (640×480) |
+| Pattern analysis per garment | 800-1200 ms | GPT-4o API + retry logic |
+| Color clustering (3 garments) | 10-15 ms | K-means in LAB space |
+| Material inference (3 garments) | 5-8 ms | Image heuristics + AI fallback |
+| Style scoring | 8-12 ms | All 6 subscores |
+| **Total end-to-end** | **2000-2500 ms** | ~1 outfit per 2-3 seconds on CPU |
+
+### Performance Tips
+
+1. **Batch multiple garments** — The system processes all crops concurrently (max_concurrency=3 by default)
+2. **Use GPU for YOLO** — Set `DEVICE=cuda` in environment variables for ~3x speedup
+3. **Monitor buffer size** — Check `/api/profiling` periodically and clear to avoid memory growth
+4. **Cache models** — YOLOv8 and feature extractors are loaded once at startup
+5. **Profile before optimizing** — Use the profiling endpoints to identify bottlenecks
+
+---
+
 ## 🧪 Testing
 
 ### Backend Tests
@@ -339,6 +476,13 @@ cd backend
 python -m scoring.example
 ```
 
+### API Feature Extraction Test
+```bash
+cd backend
+python scripts/api_test.py --api http://localhost:5000 --image path/to/garment_crop.jpg
+```
+Returns real extracted features (colors, material, gloss, pattern strength) for verification.
+
 ### Manual Testing
 1. Start the application (see Setup Instructions)
 2. Allow webcam access
@@ -350,13 +494,14 @@ python -m scoring.example
 
 ### Short Term (v0.2)
 - ✅ **Style Scoring System** - Completed in v0.1
-- 🔄 **Real Feature Extraction** - Replace mock data with:
+- ✅ **Real Feature Extraction** - Completed in v0.2:
   - Color clustering (k-means on LAB colors from clothing regions)
-  - Person segmentation for thirds area calculation
+  - AI-powered material classification with image fallback
+  - Gloss estimation from brightness and edge analysis
+  - Pattern strength from local color variance
+  - Thirds area computation from segmentation bboxes
   - Domain z-score calculation from extracted features
-  - Material classification from images or metadata
-  - Pattern strength estimation from CNN/heuristics
-- **Performance Optimization** - Batch processing, caching, GPU acceleration
+- 🔄 **Performance Optimization** - Batch processing, caching, GPU acceleration
 
 ### Medium Term (v0.3)
 - **Outfit Recommendation Engine** - Suggest changes or matching items
@@ -381,13 +526,16 @@ python -m scoring.example
 - **Backend:** Flask with Socket.IO for real-time communication and REST API for style scoring
 - **Frontend:** React with TypeScript, Socket.IO client for real-time updates
 - **Scoring:** Pure Python algorithms, no ML model dependencies for scoring
-- **Pattern Recognition:** OpenAI GPT-4o with structured outputs
+- **Pattern & Material Recognition:** OpenAI GPT-4o with structured outputs (JSON Schema)
+- **Feature Extraction:** Image-based analysis (color clustering, gloss, pattern strength, material inference)
 
 ### Key Design Decisions
 - **Deterministic Scoring:** Same input always produces same output (versioned config)
 - **Explainable Results:** All scores include human-readable explanations
 - **Modular Architecture:** Easy to extend with new scoring factors
 - **Type Safety:** TypeScript on frontend, TypedDict on backend
+- **Real Feature Extraction:** AI-powered pattern and material detection with image-based fallbacks
+- **Confidence Scoring:** All AI predictions include confidence metrics for reliability assessment
 
 ### Code Style
 - Python: Follow PEP 8, use type hints
@@ -406,12 +554,13 @@ Contributions and discussions are welcome!
 You can fork the repository, create feature branches, and submit pull requests.
 
 ### Areas for Contribution
-- Feature extraction (color clustering, person segmentation)
-- Additional scoring algorithms
-- UI/UX improvements
-- Documentation
+- Person/body segmentation for more accurate proportion analysis
+- Additional material texture features (Gabor filters, wavelet analysis)
+- Advanced texture classification models
+- UI/UX improvements (dark mode, history view, outfit recommendations)
+- Documentation and tutorials
 - Testing and bug fixes
-- Performance optimization
+- Performance optimization (GPU acceleration, caching)
 
 ## 📚 Documentation
 
@@ -436,15 +585,19 @@ You can fork the repository, create feature branches, and submit pull requests.
 - Check browser console for errors
 - Verify Socket.IO connection in browser dev tools
 
-**Pattern analysis fails:**
+**Pattern/Material analysis fails:**
 - Verify OpenAI API key is set in environment variables
-- Check API key has sufficient credits
-- Review backend logs for error messages
+- Check API key has sufficient credits and quota
+- Ensure crop images are being generated and sent to the backend
+- Review backend logs for detailed error messages
+- Try with different lighting conditions or garment images
 
 **Style scoring returns errors:**
-- Ensure pattern analysis has completed first
-- Check that outfit features are properly formatted
+- Ensure pattern and material analysis has completed first
+- Check that outfit features are properly formatted (including materialConfidence)
+- Verify that real feature extraction succeeded (check garments array)
 - Review backend logs for detailed error messages
+- If material inference fails, the system falls back to heuristics automatically
 
 **Webcam not working:**
 - Grant browser permissions for camera access
